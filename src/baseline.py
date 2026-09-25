@@ -8,13 +8,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-DATE_PATTERN = re.compile(
-    r"\b(?:\d{2}[./-]\d{2}[./-](?:\d{2}|\d{4})|\d{2}-[A-Za-z]{3}-\d{4}|\d{4}-\d{2}-\d{2})\b"
-)
-EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-PHONE_PATTERN = re.compile(r"(?:\+\d{1,3}[ -]?)?(?:\(?\d{2,5}\)?[ /-]?){2,4}\d{3,8}")
-ID_PATTERN = re.compile(r"\b(?:B-\d{6}|CHN-\d{7}|HYD\d{6}|BER/\d{4}/\d{2}|UHID/\d{5}/\d{2}|MRN-\d{2}-\d{5})\b")
-
 DIAGNOSIS_KEYWORDS = {
     "atrial_fibrillation": ("atrial fibrillation",),
     "heart_failure": ("heart failure",),
@@ -44,45 +37,6 @@ MEDICATIONS = (
     "digoxin",
     "azithromycin",
 )
-
-
-def _add_span(spans: list[dict[str, Any]], start: int, end: int, label: str) -> None:
-    if start < 0 or end <= start:
-        return
-    for span in spans:
-        if start < span["end"] and end > span["start"]:
-            return
-    spans.append({"start": start, "end": end, "label": label})
-
-
-def detect_pii(note: str) -> list[dict[str, Any]]:
-    spans: list[dict[str, Any]] = []
-    for match in EMAIL_PATTERN.finditer(note):
-        _add_span(spans, *match.span(), "EMAIL")
-    for match in ID_PATTERN.finditer(note):
-        _add_span(spans, *match.span(), "PATIENT_ID")
-
-    # Contextual date labeling is simplistic by design.
-    for match in DATE_PATTERN.finditer(note):
-        context = note[max(0, match.start() - 20) : match.start()].lower()
-        label = "DATE_OF_BIRTH" if "dob" in context or "born" in context else "ENCOUNTER_DATE"
-        _add_span(spans, *match.span(), label)
-
-    for match in PHONE_PATTERN.finditer(note):
-        candidate = match.group(0)
-        context = note[max(0, match.start() - 15) : match.start()].lower()
-        if any(token in context for token in ("phone", "telephone", "mobile", "contact", "ph ")) and sum(ch.isdigit() for ch in candidate) >= 8:
-            _add_span(spans, *match.span(), "PHONE_NUMBER")
-
-
-    return sorted(spans, key=lambda item: (item["start"], item["end"]))
-
-
-def render_deidentified(note: str, spans: list[dict[str, Any]]) -> str:
-    output = note
-    for span in reversed(spans):
-        output = output[: span["start"]] + f"[{span['label']}]" + output[span["end"] :]
-    return output
 
 
 def _first_number(pattern: str, text: str) -> float | None:
