@@ -20,9 +20,9 @@ First, I pushed the challenge files to GitHub as they were, updated Python to 3.
 |---|---:|---:|
 | De-identification score | 0.7279 | **1.0000** |
 | PII characters leaked | 45.7% | **0%** |
-| Structured extraction score | 0.8797 | 0.8797 (not changed yet) |
+| Structured extraction score | 0.8797 | 0.8797 (improved in section 4) |
 | Readmission prediction score | 0.7727 | 0.7727 (not changed yet) |
-| Automated points | 31.84 / 40 | 35.92 / 40 |
+| Automated points | 31.84 / 40 | 35.92 / 40 (after this task only) |
 
 ### Method: rule-based detection
 
@@ -82,7 +82,63 @@ The current data is text only, but the same detector can be reused for other for
 
 ## 4. Structured extraction and standardization
 
-_To be completed._
+In this step, each note is turned into a fixed form with 9 fields: diagnoses, medications, heart rate, systolic blood pressure, creatinine, hemoglobin, LVEF, smoking status and allergy. Every answer has to use the canonical names and units from `DATA_DICTIONARY.md`, for example `hypertension` for "HTN" and creatinine in mg/dL. The starter already got heart rate, blood pressure, LVEF, smoking and allergy right on the public data, but it only knew the full textbook name of each diagnosis and the generic name of each drug, and it only read lab values that were already in the standard unit.
+
+First, I moved the extraction code from `src/baseline.py` into its own file, `src/extraction.py`, to keep the code modular (the same as `src/deid.py` for task 1). I did this as a separate step with no logic changes, and checked that the score stayed exactly the same (0.8797) before changing anything.
+
+| Validation (30 cases) | Starter | After my changes |
+|---|---:|---:|
+| Diagnoses F1 (share found) | 0.68 (52%) | **1.00** (100%) |
+| Medications F1 (share found) | 0.93 (86%) | **1.00** (100%) |
+| Creatinine within tolerance | 83% | **100%** |
+| Hemoglobin within tolerance | 73% | **100%** |
+| Heart rate, BP, LVEF, smoking, allergy | 100% | 100% |
+| Structured extraction score | 0.8797 | **1.0000** |
+| Automated points (all tasks) | 35.92 / 40 | 37.73 / 40 |
+
+### Terminology normalisation
+
+The notes use many wordings for the same thing. For hypertension alone the data has `HTN`, `high blood pressure`, `arterial hypertension`, `systemic hypertension` and `hypertensive disease`. I built two synonym dictionaries, one for the 9 diagnoses and one for the 16 drugs, from three sources: every wording in the public notes; common medical terms that are not in the dataset, which I discussed with my brother, who is a medical doctor; and synonyms generated with the AI (abbreviations, brand names, British and German spellings, since the Berlin notes already use German terms like "Vorhofflimmern"). Looking at the results, a few of the longer terms were not needed, for example "heart failure with reduced ejection fraction" is already covered because the entry "heart failure" matches inside it.
+
+For wordings that could mean more than one thing, I checked how the ground truth labels them instead of guessing: plain "diabetes mellitus" is labelled type 2 in all 15 public notes that use it, "IHD" is coronary artery disease, and "NSTEMI" and "unstable angina" are acute coronary syndrome. Coronary artery disease (long-term narrowed arteries) and acute coronary syndrome (a sudden event) stay separate labels, as in the data dictionary; 27 notes have only CAD, 5 only ACS and 2 both. Look-alike diseases are excluded: "pulmonary hypertension", "type 1 diabetes" and "gestational diabetes" are not mapped.
+
+Two matching rules make the abbreviations safe. Every wording must be a whole word, so `AF` does not match inside "after" or "STAFF", and `DM` does not match inside "ADMISSION". Abbreviations written in capitals must appear in capitals, so `CAP` (community-acquired pneumonia) does not match `Cap` (capsule). Drugs map brands and short forms to the generic name: `Lasix` → furosemide, `Eliquis` and `APX` → apixaban, `Ecosprin` and `ASA` → aspirin.
+
+The validation set contains wordings that never appear in training (`bronchopneumonia`, `CAP`, `unstable angina`, `chronic renal disease`), which confirmed that the dictionaries need general coverage and not only the training wordings.
+
+### Negation handling
+
+Only active diagnoses and current medications belong in the output. The data card mentions "negated and family-history distractors", and the public notes contain three: "The patient denies a history of COPD", "Atrial fibrillation was considered but not confirmed" and "Apixaban was discussed but was not started" (8 mentions in total). Adding the synonym `COPD` actually created a new error here, because the starter had only avoided "denies COPD" by not knowing the abbreviation, so synonyms and negation had to be solved together.
+
+I used a simplified version of the NegEx idea. For every mention, the code looks at its clause (the text between two sentence breaks, semicolons or line breaks) and checks for a cue before the term (`no`, `denies`, `without`, `ruled out`, `family history`, `mother`, `stopped`, `allergic to`, ...) or after it (`was considered`, `was discussed`, `not confirmed`, `not started`, `stopped`, `in her mother`). A cue only reaches its own clause, and words like "but" or "however" end it, so in "No chest pain but known AF" the AF is kept. A diagnosis counts if at least one of its mentions is not negated. I also treated "possible", "suspected" and "query" as not active, because the data dictionary excludes "considered-only" concepts and these are uncertain in the same way.
+
+### Unit conversion and missing values
+
+Two hospitals write lab values in other units: Hyderabad writes creatinine in µmol/L (34 notes) and Chennai writes hemoglobin in g/L (35 notes). The starter only read values followed by mg/dL or g/dL, so it returned `null` for all of them. The new code reads the value and its unit and converts: creatinine µmol/L ÷ 88.4 and hemoglobin g/L ÷ 10 (factors from the data dictionary), plus mmol/L for both, which German labs use for hemoglobin. The µ sign can be written three ways (the micro sign, the Greek letter mu, or "u"), and all are accepted. Decimal commas (`0,91`) are read as decimal points.
+
+Each lab has a realistic range in the standard unit (creatinine 0.1–20 mg/dL, hemoglobin 3–25 g/dL). When no unit is written, the unit that gives a realistic value is used ("creatinine 88" can only be µmol/L), and an impossible written unit is treated as a typo. Look-alike tests are skipped: "creatinine clearance" and "HbA1c" (a diabetes test) are not read as creatinine or hemoglobin. When a value is not in the note, the field is `null`; the code never guesses a number.
+
+### Smoking and allergy
+
+Both were already correct on the public data, but only for the exact wordings in it, so I made them robust to new wordings. Smoking checks never, then former, then current, because "non-smoker" contains "smoker" and "stopped smoking" contains "smoking". I added wordings such as "quit smoking", "gave up smoking", "smokes 10 cigarettes a day", "bidis" and the German "Nichtraucher" and "Ex-Raucher", and sentences about someone else ("father smokes", "passive smoking") are skipped.
+
+For allergy, the starter searched the whole note, so "Penicillin V 500 mg QID. No known drug allergies." was reported as a penicillin allergy. Now an allergen only counts when its clause mentions an allergy or a reaction ("allergic", "reaction", "rash", "urticaria", ...). This also catches "ibuprofen-associated urticaria", which is in the data without the word "allergy". Penicillin-class antibiotics such as amoxicillin count as penicillin, and German compound words ("Kontrastmittelallergie") are recognised. A named allergen wins over "no known allergies", and `null` means allergies are not mentioned. I did not map an aspirin allergy to NSAID on purpose: aspirin is in most medication lists here, so the risk of false matches is high.
+
+### Results and error analysis
+
+On all 150 public notes, every field is now correct (numbers within the evaluator's tolerance), for every hospital. On the training set the starter had missed 132 diagnoses and 51 medications, and had 29 creatinine and 27 hemoglobin values wrong.
+
+Errors found and fixed while building this:
+
+- Per-field scores: my first whole-word rule treated a hyphen as part of the word, so `CKD-3` was not recognised.
+- Per-field scores: one Hyderabad note writes apixaban as `APX 5 mg BID`, which was missing from the dictionary.
+- Code review, confirmed by the scores: I had added "ischemic heart disease" to the acute coronary syndrome list, which added ACS wrongly to 8 notes. In the ground truth all of those notes are coronary artery disease, so I removed it.
+- Edge-case tests: "Warfarin stopped due to bleeding" still counted warfarin, because only "*was* stopped" was a cue after the term.
+- Edge-case tests: German compound allergy words ("Kontrastmittelallergie") were missed by the whole-word rule.
+
+### Tests
+
+`tests/test_extraction.py` adds 125 tests: one full note per hospital, every group of synonyms, the CAD/ACS split, look-alike diseases, whole-word and capital-letter rules, the negation sentences from the data and made-up ones, every unit and the missing-unit cases, smoking and allergy wordings, and a check that all 150 public notes are extracted correctly. Four known limitations are marked as expected to fail (see section 8). To check that the tests really test something, I broke the code on purpose three times: turning negation off failed 15 tests and removing the µmol/L conversion failed 7, but removing whole-word matching failed none, because all my abbreviation examples were lowercase and the capital-letter rule already blocked them. I added an all-caps example (`ADMISSION NOTE - STAFF SAFETY REVIEW - DECADE`), and that break is now caught too.
 
 ## 5. Federated-learning experiment
 
@@ -95,9 +151,9 @@ _To be completed._
 ## 7. Reproducibility and testing
 
 - Python 3.11 in a virtual environment, matching the Dockerfile.
-- `make test` runs all tests (currently 53 passed, 4 expected failures for known de-identification limitations).
+- `make test` runs all tests (currently 178 passed, 8 expected failures for known limitations: 4 in de-identification, 4 in extraction).
 - `make evaluate` rebuilds `outputs/validation_predictions.jsonl` and `outputs/validation_report.json`. The `outputs/` folder is in `.gitignore`, so evaluation results are regenerated rather than committed.
-- The de-identification rules are deterministic: the same note always gives the same spans.
+- The de-identification and extraction rules are deterministic: the same note always gives the same output.
 
 _To be completed for the other components._
 
@@ -106,13 +162,26 @@ _To be completed for the other components._
 **De-identification, limitations of my implementation:**
 
 - Single-word names (`Patient: Madonna`) are not detected, because a single capitalised word could be anything.
-- A name with no trigger word and no cue around it (`Seen today: Clara Scholz is stable`) is not detected.
-- A patient who is a doctor, mentioned only with "Dr." and no role word (`Dr. Anna Keller was admitted with chest pain`), is labelled as a clinician. The name is still masked, only the label is wrong. Some further text analysis could handle this.
+- A name with no trigger word and no cue around it (`Seen today: Clara Scholz is stable`) is not detected, although i tried to include some cues to distinguish this case, but sometimes with no observed pattern for what comes before or after the name, its hard to be caught so far (this is relevant to the last point as well).
 - A relative's name (`Wife Anna Scholz`) is not masked, because none of the 8 labels covers relatives.
-- The rules depend on trigger words and formats. A hidden note written very differently could still leak PII. A next step would be a fallback layer that finds names without context, for example a list of first names or a small pretrained named-entity model, filtered by the same clinical word list.
+- The rules depend on trigger words and formats. A hidden note written very differently could still leak PII. A next step would be a fallback layer that finds names without context (or cues before or after), for example a list of first names or a small pretrained named-entity model, filtered by the same clinical word list.
 
 **De-identification, limitations of the benchmark:**
 
 - The notes are generated from templates, so a perfect score on the public data says little about real clinical notes, which are longer and much more varied.
+
+**Structured extraction, limitations of my implementation:**
+
+- The synonym dictionaries are lists: a wording that is not in them is missed. They cover English and some German, not other languages.
+- A cue after a term applies to the whole clause, so in "AF, but CKD was ruled out" the AF is also dropped.
+- Past illnesses marked "resolved" are still counted, and negation written in the next sentence ("Echo was checked for heart failure. None found.") is not linked back.
+- Only the first value of a lab test is read, so "admission creatinine 2.1, discharge creatinine 1.3" gives 2.1.
+- A hemoglobin value around 5–11 with no unit is read as g/dL; in mmol/L it would mean something else, and the number alone cannot tell them apart.
+- Only one allergy can be reported, so with several allergies the first one mentioned is used. An aspirin allergy is not mapped to NSAID (a deliberate choice), and "denies smoking" is read as never, although it could describe a former smoker.
+- "Possible", "suspected" and "query" are treated as not active. This is a judgment call; the public data has no such cases to check it against.
+
+**Structured extraction, limitations of the benchmark:**
+
+- Every public note states smoking and allergy, so the `null` case for these fields is only checked by my own tests, not by the data.
 
 _To be completed for the other components._
