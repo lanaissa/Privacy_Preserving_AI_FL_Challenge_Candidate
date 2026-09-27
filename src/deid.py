@@ -36,12 +36,12 @@ def _name_pattern(word: str) -> str:
     return rf"{token}(?: (?:{_PARTICLE} ){{0,3}}{token}){{1,3}}"
 
 
-# Normal-case names, used everywhere.
+# Normal-case names, used everywhere (patients and clinicians).
 NAME = _name_pattern(_WORD)
 # ALL-CAPS names are only accepted after an explicit trigger; elsewhere they are
-# indistinguishable from headers such as "SYNTHETIC EMR EXPORT".
+# indistinguishable from headers such as "SYNTHETIC EMR EXPORT" or abbreviations.
 NAME_ANY_CASE = _name_pattern(rf"(?:{_WORD}|{_CAPS_WORD})")
-# Titles before a name. Matched outside the name so they are never masked.
+# Titles before a name. Matched outside the name so they are not masked.
 _TITLE = r"(?:(?:Dr|Prof|Mr|Mrs|Ms|Miss)\.?\s+)"
 # Finds titles at the start of a matched text, so they can be trimmed off.
 _TITLE_PREFIX = re.compile(rf"^{_TITLE}+")

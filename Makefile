@@ -7,7 +7,7 @@ install:
 
 run:
 	mkdir -p outputs/artifacts
-	$(PYTHON) run_submission.py --train data/train.jsonl --input data/validation_inputs.jsonl --output outputs/validation_predictions.jsonl --artifacts-dir outputs/artifacts
+	$(PYTHON) run_submission.py --train data/train.jsonl --input data/validation_inputs.jsonl --output outputs/validation_predictions.jsonl --artifacts-dir outputs/artifacts --ground-truth data/validation_ground_truth.jsonl
 
 evaluate: run
 	$(PYTHON) evaluator/evaluate.py --inputs data/validation_inputs.jsonl --ground-truth data/validation_ground_truth.jsonl --predictions outputs/validation_predictions.jsonl --report outputs/validation_report.json

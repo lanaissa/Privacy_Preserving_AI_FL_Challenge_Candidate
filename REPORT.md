@@ -142,7 +142,78 @@ Errors found and fixed while building this:
 
 ## 5. Federated-learning experiment
 
-_To be completed._
+In this step, the model predicts for each patient the probability of an unplanned readmission within 30 days. The three hospitals are not allowed to pool their patients' rows, so the task is to compare three ways of training the same model: one local model per hospital (no collaboration), a federated model trained with FedAvg (collaboration without sharing rows), and a centralized model on pooled data (the reference that the real setting forbids). The starter only had a centralized scikit-learn model on the 5 structured features plus the hospital name.
+
+The data is small and different per hospital (non-IID):
+
+| Hospital | Training cases | Readmitted | Validation cases | Readmitted |
+|---|---:|---:|---:|---:|
+| Berlin | 42 | 15 (36%) | 10 | 3 |
+| Chennai | 39 | 17 (44%) | 10 | 2 |
+| Hyderabad | 39 | 9 (23%) | 10 | 1 |
+
+With only 6 readmissions in validation (1 at Hyderabad), a single patient can move the validation score a lot. So I compare the settings mainly with cross-validation on the 120 training cases, and report validation next to it.
+
+### Features
+
+I chose the features with repeated cross-validation on the training set only, to keep validation untouched. The starter's 5 structured features reached an AUC of 0.69; adding the 9 diagnoses from my task 2 extraction raised it to 0.81, which shows that the note carries most of the signal. The hospital name and smoking did not help. When I redid the feature selection inside each fold (so the held-out patients were never used to choose features), the same features were picked almost every time, with an honest AUC of 0.84.
+
+I first kept 7 features, including LVEF and creatinine. On their own, low LVEF and high creatinine go with readmission, but in the model their weights had the opposite sign (+0.33 and −0.28), because heart failure and CKD already carry that information (collinearity). Comparing 5 against 7 features on the same folds gave the same result (AUC 0.881 vs 0.877; 7 features won in 24 folds, 5 in 18), so I kept the simpler set. The final features are **age, prior admissions in the last 12 months, heart failure, chronic kidney disease and atrial fibrillation**. As a bonus, none of these five is ever missing, so no values need to be filled in. The diagnoses come from my own extraction of the note for the training cases too (not from the provided labels), so training and prediction features are produced the same way.
+
+### One model for all three settings
+
+All three settings use the same logistic regression, which I wrote with numpy (`src/model.py`) because FedAvg needs direct access to the weights between rounds. It is trained with mini-batch gradient descent (learning rate 0.1, batch size 16) and a small L2 penalty (0.01), which matters with 120 cases: for example, all 6 training patients with prior admissions were readmitted, which would otherwise push that weight very high. I checked that it gives the same weights as scikit-learn's logistic regression.
+
+Features are scaled to mean 0 and spread 1. Normally this needs the mean and spread of all patients, which nobody may see in the federated setting. Instead, each hospital shares only three totals per feature (count, sum and sum of squares), and the server adds them up; this gives exactly the same scaling as pooling the data.
+
+### Local, federated and centralized models
+
+- **Local:** each hospital trains on its own patients for 100 passes, with scaling from its own totals only, since even sharing totals is collaboration. A patient is scored by their own hospital's model.
+- **Federated (FedAvg):** in each of 50 rounds, the server sends the current weights to the three hospitals, each trains a copy for 2 passes over its own patients, and the server averages the returned weights, weighted by number of training cases (42/120, 39/120, 39/120). Each hospital also reports one loss value per round, so convergence can be tracked without seeing any data. The hospitals are objects whose patient rows are private; their only public methods return the case count, the feature totals, updated weights or a loss value.
+- **Centralized:** the same model on all 120 patients pooled, for 100 passes.
+
+To make the comparison fair, the only difference between the settings is who sees which rows: same model code, features, scaling, settings and amount of training (100 passes, which is 50 rounds × 2 local passes for FedAvg). I also checked that my FedAvg is correct: with one full-batch local step per round, it gives exactly the same weights as centralized training, because the weighted average of the hospitals' updates equals the update on the pooled data.
+
+### Results
+
+Cross-validation is stratified 5-fold on the training set, balanced by hospital and outcome so every fold contains every hospital, run once for each of the seeds 7, 19 and 43. Validation trains on all 120 cases and scores the 30 labelled validation cases. Numbers are means over the three seeds (full results, including average precision and Brier score per site, are in `experiment_summary.json`).
+
+| Setting | CV AUC | CV Brier | CV AUC Berlin | Chennai | Hyderabad | Validation AUC | Validation Brier |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Local | 0.829 | 0.150 | 0.628 | 0.870 | 0.909 | 0.752 | 0.144 |
+| **Federated** | **0.866** | **0.131** | **0.693** | **0.905** | **0.955** | **0.790** | **0.140** |
+| Centralized | 0.865 | 0.130 | 0.695 | 0.901 | 0.953 | 0.790 | 0.140 |
+
+- Local is the weakest, and every hospital gains from federation, Berlin the most (0.63 → 0.69).
+- Federated and centralized are practically the same: on the training patients their probabilities never differ by more than 3 percentage points. Logistic regression has a single best solution, and FedAvg reaches almost the same point through averaged updates.
+- The final predictions in the submission come from the federated model (seed 7), since training without pooling rows is the point of the task and it loses nothing against the centralized model.
+
+**Comparison with the starter.** On the same cross-validation folds, the starter's model reaches an AUC of 0.693 and Brier 0.219 against 0.866 and 0.131 for the federated model. On the 30 validation cases, however, the automated readmission score is slightly lower than the starter's (0.764 vs 0.773). Looking at the 6 readmitted validation patients, the difference comes mainly from one 76-year-old Berlin patient with none of the risk diagnoses, whom the starter ranks higher because it leans on age. I did not tune the model to these few patients: fitting 30 validation cases would make the result on the hidden set less reliable, not more.
+
+### Non-IID data and per-site performance
+
+- **Different readmission rates:** from 23% (Hyderabad) to 44% (Chennai). The federated model has a single bias for all hospitals, but on the training data its average predicted risk is close to the real rate at each hospital (Berlin 0.33 vs 0.36, Chennai 0.43 vs 0.44, Hyderabad 0.28 vs 0.23), because Chennai's higher rate is explained by its patients' features (more heart failure, CKD and prior admissions). Hyderabad is slightly over-predicted, which is a small real site effect.
+- **Missing patterns at one site:** Berlin has no training patients with CKD, so its local model's CKD weight stays exactly 0, while the federated model learns CKD from Chennai and Hyderabad. Almost all prior admissions are at Chennai (10 of 12).
+- **Berlin is the hardest hospital** for every setting (CV AUC 0.63–0.70). Berlin's own local model even ranks the other hospitals' patients better (0.84–0.86) than its own, so this is about Berlin's patients, not about the model.
+- **Client drift:** the only visible difference between federated and centralized weights is prior admissions (0.52 vs 0.61). Its evidence sits almost only at Chennai, and averaging with the Berlin and Hyderabad updates dilutes it slightly.
+- **Client weighting:** weighting by number of cases and giving each hospital an equal vote change the weights by at most 0.008, with the same validation AUC, because the hospitals are almost the same size. It would matter with very different sizes.
+
+### Convergence and seed stability
+
+The training loss falls from 0.621 after round 1 to 0.437 at round 10 and flattens around round 30 (0.403; 0.401 at round 50). The weights never stop moving completely (about 0.01 per round), because each hospital trains on small shuffled batches of different data, so the three updates always pull in slightly different directions. The seed only decides the shuffling order; across seeds 7, 19 and 43 the federated weights differ by at most 0.02, and the spread in cross-validation AUC is 0.007 (0.016 for the local models, which train on less data).
+
+### What is exchanged
+
+Patient rows never leave a hospital. Per hospital, for the whole training run:
+
+- **Hospital → server:** the number of training cases (1 number) and the feature totals (15 numbers) once, then in each of the 50 rounds the updated weights (6 numbers) and one loss value: 366 numbers in total.
+- **Server → hospital:** the shared scaling (10 numbers) once, then the global weights (6 numbers) every round.
+
+This is not a formal privacy guarantee. The weights and totals are sent in the clear, and with small hospitals they can still reveal information about individual patients (for example, the CKD total shows that Berlin has no CKD patients). Section 6 adds a privacy mechanism on top of this.
+
+### Tests
+
+`tests/test_federated.py` adds 21 tests: the features come from the note and not the labels, the hospital totals add up to the pooled totals, the model matches scikit-learn, FedAvg equals pooled training with one full-batch step, the averaging weights hospitals correctly, FedAvg converges and is stable across seeds, Berlin alone cannot learn CKD, and the summary file has all required fields. One test "spies" on a real FedAvg run and checks that everything a hospital hands to the server is a count, feature totals, 6 weights or a single loss value. To check that the tests catch real mistakes, I broke the code on purpose four times (averaging without hospital sizes, using only the first hospital's update, a hospital returning its data matrix instead of weights, and removing the "wrong hospital" guard); each break made between 1 and 6 tests fail.
 
 ## 6. Privacy extension and threat model
 
@@ -151,11 +222,11 @@ _To be completed._
 ## 7. Reproducibility and testing
 
 - Python 3.11 in a virtual environment, matching the Dockerfile.
-- `make test` runs all tests (currently 178 passed, 8 expected failures for known limitations: 4 in de-identification, 4 in extraction).
-- `make evaluate` rebuilds `outputs/validation_predictions.jsonl` and `outputs/validation_report.json`. The `outputs/` folder is in `.gitignore`, so evaluation results are regenerated rather than committed.
+- `make test` runs all tests (currently 199 passed, 8 expected failures for known limitations: 4 in de-identification, 4 in extraction). It takes about 20 seconds, because two tests run the full experiment, including the exact hidden-test command.
+- `make evaluate` rebuilds `outputs/validation_predictions.jsonl`, `outputs/validation_report.json` and the artifacts. The `outputs/` folder is in `.gitignore`, so evaluation results are regenerated rather than committed. A full run takes about 10 seconds on a laptop, far below the 30-minute limit.
+- `run_submission.py` has one optional extra argument, `--ground-truth`. When labels for the input cases are given (as `make evaluate` does for validation), validation metrics are added to `experiment_summary.json`; without it, as in the hidden-test run, the summary reports cross-validation only. The required command is unchanged.
 - The de-identification and extraction rules are deterministic: the same note always gives the same output.
-
-_To be completed for the other components._
+- The readmission models use fixed seeds (7, 19 and 43; the final model uses 7). The seed only controls the shuffling of the training cases, and the same seed gives bit-for-bit the same weights on the same machine. Tiny floating-point differences are possible on other hardware or numpy builds, but they would not change the results in any visible way.
 
 ## 8. Limitations and next steps
 
@@ -183,5 +254,18 @@ _To be completed for the other components._
 **Structured extraction, limitations of the benchmark:**
 
 - Every public note states smoking and allergy, so the `null` case for these fields is only checked by my own tests, not by the data.
+
+**Federated learning, limitations of my implementation:**
+
+- The features were chosen with cross-validation on the same training set that the cross-validation results come from, so those results are somewhat optimistic (the honest estimate with selection inside each fold was an AUC of 0.84).
+- Logistic regression is a simple linear model with one shared bias; it does not model site effects beyond the features (Hyderabad is slightly over-predicted), and there is no per-hospital calibration or personalisation.
+- The federation is simulated in one process: every hospital takes part in every round, in a fixed order, with no network, dropouts or delays.
+- Weights, feature totals and loss values are shared in the clear, so federated learning alone is not a formal privacy guarantee (see section 6).
+- The hospitals are almost the same size, so the effect of client weighting could not really be tested.
+
+**Federated learning, limitations of the benchmark:**
+
+- Only 120 training and 30 validation cases, with 6 readmissions in validation (1 at Hyderabad), so per-site validation metrics are very noisy and differences of a few points are not meaningful.
+- The outcome is generated from a few risk factors plus a site effect, so a simple linear model is well suited here; real readmission data is much harder.
 
 _To be completed for the other components._
