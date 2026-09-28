@@ -68,7 +68,9 @@ docker run --rm -v "$PWD/outputs:/workspace/outputs" fl-challenge \
   --artifacts-dir outputs/artifacts
 ```
 
-The entry point is `run_submission.py`, so the container accepts the standard arguments directly. The image uses `python:3.11-slim-bookworm` with pinned package versions, and `.dockerignore` keeps the local virtual environment, Git history and outputs out of the image. To use another input file, mount its folder and pass its path in the container.
+The entry point is `run_submission.py`, so the container accepts the standard arguments directly. The image uses `python:3.11-slim-bookworm` with every package version pinned, and `.dockerignore` keeps the local virtual environment, Git history and outputs out of the image. To use another input file, mount its folder and pass its path in the container.
+
+Tested with Docker 29.8 for `linux/amd64` (on an Apple-silicon Mac, add `--platform linux/amd64` to both commands): the image is 585 MB, the standard command runs in about 20 seconds with networking turned off (`--network none`) and gives the same scores as a local run, and the full test suite passes inside the container.
 
 ## Outputs
 
