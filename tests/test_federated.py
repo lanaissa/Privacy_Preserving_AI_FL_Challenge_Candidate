@@ -117,51 +117,52 @@ def test_client_needs_scaling_before_training() -> None:
 
 
 class SpyClient(HospitalClient):
-    """A real hospital client that records everything it hands to the server."""
+    """A real hospital client that records every message it sends to the server."""
 
     def __init__(self, name, records):
         super().__init__(name, records)
         self.sent = []
 
-    @property
-    def n_cases(self):
-        value = super().n_cases
-        self.sent.append(value)
+    def start_key_agreement(self):
+        value = super().start_key_agreement()
+        self.sent.append(("public_key", value))
         return value
 
-    def feature_totals(self):
-        value = super().feature_totals()
-        self.sent.append(value)
+    def totals_message(self, *args, **kwargs):
+        value = super().totals_message(*args, **kwargs)
+        self.sent.append(("totals", value))
         return value
 
-    def local_update(self, *args, **kwargs):
-        value = super().local_update(*args, **kwargs)
-        self.sent.append(value)
+    def update_message(self, *args, **kwargs):
+        value = super().update_message(*args, **kwargs)
+        self.sent.append(("update", value))
         return value
 
-    def local_loss(self, *args, **kwargs):
-        value = super().local_loss(*args, **kwargs)
-        self.sent.append(value)
+    def loss_message(self, *args, **kwargs):
+        value = super().loss_message(*args, **kwargs)
+        self.sent.append(("loss", value))
         return value
 
 
-# During a full FedAvg run, a hospital only ever sends: its case count, feature totals,
-# model weights and single loss values. No patient rows or labels leave the hospital.
-def test_fedavg_only_receives_summaries_from_hospitals() -> None:
+def spy_clients() -> dict[str, SpyClient]:
     by_site = {}
     for record in TRAIN:
         by_site.setdefault(record["hospital_id"], []).append(record)
-    clients = {name: SpyClient(name, rows) for name, rows in by_site.items()}
-    train_fedavg(clients, rounds=3, local_epochs=1, config=TrainingConfig(), seed=7)
+    return {name: SpyClient(name, rows) for name, rows in by_site.items()}
+
+
+# During a full FedAvg run (without masking, so the values are readable), a hospital only
+# ever sends: one totals vector (case count + 3 totals per feature), model weights and
+# single loss values. No patient rows or labels leave the hospital.
+def test_fedavg_only_receives_summaries_from_hospitals() -> None:
+    clients = spy_clients()
+    train_fedavg(clients, rounds=3, local_epochs=1, config=TrainingConfig(), seed=7, secure=False)
+    expected_shape = {"totals": (1 + 3 * len(FEATURES),), "update": (N_WEIGHTS,), "loss": (1,)}
     for client in clients.values():
-        assert client.sent
-        for value in client.sent:
-            if isinstance(value, FeatureTotals):
-                assert value.count.shape == (len(FEATURES),)
-            elif isinstance(value, np.ndarray):
-                assert value.shape == (N_WEIGHTS,)  # model weights, never a data matrix
-            else:
-                assert isinstance(value, (int, float))
+        kinds = [kind for kind, _ in client.sent]
+        assert kinds.count("totals") == 1 and kinds.count("update") == 3 and kinds.count("loss") == 3
+        for kind, value in client.sent:
+            assert value.shape == expected_shape[kind]  # never a data matrix
 
 
 # --- FedAvg ----------------------------------------------------------------------
@@ -170,7 +171,9 @@ def test_fedavg_only_receives_summaries_from_hospitals() -> None:
 # exactly the same weights as training on the pooled data.
 def test_fedavg_equals_pooled_training_with_one_full_batch_step() -> None:
     config = TrainingConfig(learning_rate=0.5, batch_size=10_000)
-    federated, _ = train_fedavg(partition_by_hospital(TRAIN), rounds=100, local_epochs=1, config=config, seed=7)
+    federated, _ = train_fedavg(
+        partition_by_hospital(TRAIN), rounds=100, local_epochs=1, config=config, seed=7, secure=False
+    )
     x, y = scaled_training_data()
     pooled = train_epochs(init_params(len(FEATURES)), x, y, 100, config, np.random.default_rng(7))
     assert np.allclose(federated.params, pooled, atol=1e-10)
@@ -183,24 +186,26 @@ class FixedClient:
         self.n_cases = n_cases
         self._weights = np.array(weights, dtype=float)
 
-    def feature_totals(self):
-        return FeatureTotals(np.ones(1), np.zeros(1), np.ones(1))
+    def totals_message(self, label, masked):
+        return np.array([self.n_cases, 1.0, 0.0, 1.0])  # case count + totals for one feature
 
     def apply_scaling(self, standardizer):
         pass
 
-    def local_update(self, global_params, epochs, config, rng):
-        return self._weights
+    def update_message(self, global_params, epochs, config, rng, weight_by_cases, label, masked):
+        return self._weights * (self.n_cases if weight_by_cases else 1)
 
-    def local_loss(self, params, config):
-        return 0.0
+    def loss_message(self, params, config, label, masked):
+        return np.array([0.0])
 
 
 # The server weights each hospital by its number of cases, or gives equal votes if asked.
 @pytest.mark.parametrize("weighting, expected", [("cases", [2.5, 5.0]), ("equal", [2.0, 4.0])])
 def test_fedavg_weighting(weighting: str, expected: list[float]) -> None:
     clients = {"A": FixedClient(10, [1.0, 2.0]), "B": FixedClient(30, [3.0, 6.0])}
-    model, _ = train_fedavg(clients, rounds=1, local_epochs=1, config=TrainingConfig(), seed=0, weighting=weighting)
+    model, _ = train_fedavg(
+        clients, rounds=1, local_epochs=1, config=TrainingConfig(), seed=0, weighting=weighting, secure=False
+    )
     assert np.allclose(model.params, expected)  # cases: 10/40 * A + 30/40 * B
 
 

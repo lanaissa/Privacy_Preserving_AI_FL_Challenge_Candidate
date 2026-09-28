@@ -1,103 +1,40 @@
-# Technical Take-Home Challenge
-## Privacy-Preserving Clinical AI and Cross-Silo Federated Learning
+# Privacy-Preserving Clinical AI and Cross-Silo Federated Learning
 
-### Purpose
+My solution to the take-home challenge described in [`ORIGINAL_CHALLENGE_README.md`](ORIGINAL_CHALLENGE_README.md). Three synthetic hospital nodes (Berlin, Chennai, Hyderabad) collaborate without pooling patient rows. For every clinical note, the pipeline:
 
-This challenge evaluates applied machine learning, clinical NLP, privacy reasoning, federated-learning fundamentals, software engineering, and independent problem solving. The benchmark uses only generated synthetic data. It contains no patient data and must not be interpreted clinically.
+1. **De-identifies** the note: finds the 8 PII labels and replaces them with placeholders such as `[PATIENT_NAME]`.
+2. **Extracts** 9 structured clinical fields in canonical terms and units (diagnoses, medications, vital signs, labs, smoking, allergy).
+3. **Predicts 30-day readmission** with a model trained by federated learning (FedAvg), compared against local and centralized models.
+4. **Protects the federated training with secure aggregation**, so the server only sees sums over all hospitals, never a single hospital's numbers.
 
-You have **seven calendar days** from receipt of the challenge. The expected effort is approximately **8–12 hours**. We assess the quality of your decisions and implementation, not only the final benchmark score.
+All data is synthetic. Nothing in this repository is real patient data or should be interpreted clinically.
 
-## Scenario
+## Results on the public validation set (30 cases)
 
-Three independently governed hospital nodes want to collaborate without pooling patient-level data:
+| | Starter code | This solution |
+|---|---:|---:|
+| De-identification score | 0.728 | **1.000** (no PII leaked) |
+| Structured extraction score | 0.880 | **1.000** |
+| Readmission prediction score | 0.773 | 0.764 |
+| Automated points | 31.8 / 40 | **37.6 / 40** |
 
-- `BERLIN_NODE`
-- `CHENNAI_NODE`
-- `HYDERABAD_NODE`
+For readmission, cross-validation on the 120 training cases is the more reliable comparison (validation has only 6 readmissions): the federated model reaches AUC 0.87, the same as the centralized model and better than the local models (0.83), and the starter's model reaches 0.69 on the same folds. [`REPORT.md`](REPORT.md) explains why the validation score is slightly lower than the starter's.
 
-Documentation style, terminology, units, demographics, disease prevalence, and outcome prevalence differ across the nodes. This deliberate non-IID structure reflects a cross-silo federated-learning setting.
+## Setup
 
-The public data comprise:
+Python 3.11 is required (the same version as the Docker image).
 
-- 120 labelled training cases
-- 30 labelled validation cases, supplied as separate input and ground-truth files
-- a private hidden test set used only by the reviewers
-
-Each case contains a synthetic clinical note, a small set of already structured features, and—where labels are released—ground truth for de-identification, structured extraction, and a synthetic 30-day readmission endpoint.
-
-## Your tasks
-
-### 1. Multimodal-ready clinical de-identification
-
-Identify all protected entities in `note_text` and produce both character-offset spans and a de-identified note. The current release is text-based, but your design should explain how it could be extended to other modalities such as scanned documents or images.
-
-The required PII labels are:
-
-- `PATIENT_NAME`
-- `DATE_OF_BIRTH`
-- `ENCOUNTER_DATE`
-- `ADDRESS`
-- `PHONE_NUMBER`
-- `PATIENT_ID`
-- `CLINICIAN_NAME`
-- `EMAIL`
-
-Replace each detected span with its exact label placeholder, for example `[PATIENT_NAME]`. Preserve clinically meaningful content and avoid unnecessary redaction.
-
-### 2. Structured extraction and standardization
-
-Extract the following canonical fields from each note:
-
-```json
-{
-  "diagnoses": ["atrial_fibrillation"],
-  "medications": ["apixaban"],
-  "heart_rate_bpm": 112,
-  "systolic_bp_mmhg": 128,
-  "creatinine_mg_dl": 1.14,
-  "hemoglobin_g_dl": 12.6,
-  "lvef_percent": 45,
-  "smoking_status": "former",
-  "allergy": "penicillin"
-}
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-The notes contain abbreviations, brands, alternative wording, negations, missing values, decimal commas, and different units. All outputs must use the canonical vocabulary and units described in `DATA_DICTIONARY.md`.
+No network access is needed at run time, and there are no model weights to download: the model is trained from `data/train.jsonl` on every run.
 
-### 3. Cross-silo federated learning
+## Running
 
-Develop a binary model for `readmission_30d`. At minimum, compare:
-
-1. one independently trained local model per hospital;
-2. a federated model across the three hospital nodes;
-3. a centralized model as a reference.
-
-A correct implementation of FedAvg is sufficient. You may implement it directly or use a framework. Patient-level rows from one node must not be made available to another node in the federated experiment.
-
-Your analysis should address:
-
-- client weighting and aggregation;
-- non-IID data and site-specific performance;
-- convergence and random-seed stability;
-- whether the centralized comparison is fair;
-- what information is exchanged between clients and server.
-
-The standard inference output contains one `readmission_probability` per evaluation case. The hidden benchmark evaluates discrimination and calibration. The reviewers separately inspect whether the federated experiment is genuine and technically sound.
-
-### 4. Privacy extension
-
-Implement or rigorously prototype **one** additional privacy mechanism, for example:
-
-- differential privacy;
-- secure aggregation or secure multi-party computation;
-- homomorphic encryption;
-- another well-justified privacy-preserving approach.
-
-A superficial library call is not sufficient. Define the protected asset, adversary, trust assumptions, privacy claim, utility or computational cost, and remaining failure modes. Explicitly distinguish federated learning from a formal privacy guarantee.
-
-## Required repository interface
-
-Your repository must run with this command:
+The standard command from the challenge:
 
 ```bash
 python run_submission.py \
@@ -107,83 +44,77 @@ python run_submission.py \
   --artifacts-dir outputs/artifacts
 ```
 
-The same command will be used with the hidden input file. Do not assume that hidden labels are available. The evaluator runtime has no network access.
+It writes one prediction per input case to `--output`, and `experiment_summary.json` and `privacy_summary.json` to `--artifacts-dir`. The same command works on the hidden test set, because it does not need any labels for the input cases.
 
-Your script must write:
+There is one optional extra argument, `--ground-truth <labels.jsonl>`. When labels for the input cases are given, validation metrics for the local, federated and centralized models are added to `experiment_summary.json`; without it, the summary reports cross-validation on the training set only.
 
-- one JSON object per input case to the requested `--output` path;
-- `experiment_summary.json` to `--artifacts-dir`;
-- `privacy_summary.json` to `--artifacts-dir`.
-
-The exact prediction schema is documented in `SUBMISSION_SCHEMA.md` and `schemas/prediction.schema.json`.
-
-A deliberately limited starter implementation is included. It is intended only to demonstrate the interface and should be replaced or substantially improved.
-
-## Local validation
-
-Install and run the starter:
+Shortcuts:
 
 ```bash
-python -m pip install -r requirements.txt
-make evaluate
+make evaluate   # run on the validation set (with --ground-truth) and score it with the public evaluator
+make test       # run all tests
 ```
 
-This creates predictions and a detailed report under `outputs/`. The public evaluator provides the same automated metrics used on the hidden set.
+`make evaluate` takes about 20 seconds and `make test` about 45 seconds on a laptop, far below the 30-minute limit.
 
-## Runtime and reproducibility constraints
+## Docker
 
-The final solution must be reproducible in a clean environment. Hidden evaluation is planned with approximately:
+```bash
+docker build -t fl-challenge .
+docker run --rm -v "$PWD/outputs:/workspace/outputs" fl-challenge \
+  --train data/train.jsonl \
+  --input data/validation_inputs.jsonl \
+  --output outputs/validation_predictions.jsonl \
+  --artifacts-dir outputs/artifacts
+```
 
-- 4 CPU cores;
-- 16 GB RAM;
-- no GPU;
-- no runtime network access;
-- a maximum inference/training runtime of 30 minutes after installation or image build.
+The entry point is `run_submission.py`, so the container accepts the standard arguments directly. The image uses `python:3.11-slim-bookworm` with pinned package versions, and `.dockerignore` keeps the local virtual environment, Git history and outputs out of the image. To use another input file, mount its folder and pass its path in the container.
 
-Provide a working `requirements.txt` and a functional `Dockerfile` whose entry point accepts the standard arguments above. The image should remain below 8 GB. Any model weights needed at runtime must be legally redistributable and available inside the built image; runtime downloads are not possible. Fix important random seeds and document unavoidable nondeterminism.
+## Outputs
 
-## Required repository contents
+| File | Contents |
+|---|---|
+| `outputs/validation_predictions.jsonl` | One JSON object per case: PII spans, de-identified note, extracted fields and readmission probability (schema in `SUBMISSION_SCHEMA.md`). |
+| `outputs/artifacts/experiment_summary.json` | Features, model and FedAvg settings, local vs federated vs centralized metrics overall and per hospital, convergence, communication, non-IID observations and limitations. |
+| `outputs/artifacts/privacy_summary.json` | Secure aggregation: threat model, cryptographic configuration, privacy claim and what it does not guarantee, utility and runtime comparison, and evidence of what the server can read. |
+| `outputs/validation_report.json` | The public evaluator's detailed scores (created by `make evaluate`). |
 
-Include:
+The `outputs/` folder is in `.gitignore`; everything in it is regenerated by the commands above.
 
-- `README.md` with setup and execution instructions;
-- a functional `Dockerfile` using the standard entry point;
-- clear, modular source code;
-- automated tests for important behavior and edge cases;
-- `REPORT.md`, based on the supplied template;
-- `AI_USAGE.md`;
-- retained Git commit history showing your normal development process.
+## Project structure
 
-Do not commit credentials, API keys, external private data, real clinical data, or model artefacts that you do not have the right to redistribute.
+```
+run_submission.py            entry point: runs the whole pipeline
+src/
+  deid.py                    task 1: rule-based PII detection and masking
+  extraction.py              task 2: synonyms, negation, unit conversion, smoking and allergy
+  features.py                readmission features and the feature totals used for scaling
+  model.py                   numpy logistic regression shared by all three settings
+  federated.py               task 3: hospital clients, FedAvg server and centralized reference
+  secure_aggregation.py      task 4: Diffie-Hellman key agreement, encoding and pairwise masking
+  experiment.py              local vs federated vs centralized evaluation -> experiment_summary.json
+  privacy_evaluation.py      plain vs secure FedAvg comparison -> privacy_summary.json
+tests/
+  test_deid.py               de-identification
+  test_extraction.py         structured extraction
+  test_federated.py          features, model, FedAvg and the entry point
+  test_secure_aggregation.py secure aggregation and the privacy summary
+  test_smoke.py              starter smoke tests
+  test_evaluator.py          the provided evaluator
+evaluator/                   public evaluator (provided with the challenge)
+data/, schemas/              synthetic data and schemas (provided with the challenge)
+```
 
-## Use of AI tools
+## How it works, in short
 
-Use of ChatGPT, Claude, GitHub Copilot, or comparable tools is permitted. Document the tools, their role, and how you verified or changed their output in `AI_USAGE.md`. Undisclosed use is viewed less favorably than transparent, critical use.
+- **De-identification:** regex patterns plus context rules (trigger words before a value, cues after it, titles, clinician emails), with general versions of every rule for unseen formats and a clinical word list so drug and diagnosis names are never masked.
+- **Extraction:** synonym dictionaries for the 9 diagnoses and 16 drugs (abbreviations, brands, British and German spellings), clause-based negation handling, unit conversion (µmol/L, g/L, mmol/L) with plausibility checks, and `null` when a value is not in the note.
+- **Federated learning:** 5 features (age, prior admissions, heart failure, CKD, atrial fibrillation), a logistic regression written in numpy, and FedAvg over the three hospitals for 50 rounds with 2 local epochs, weighted by the number of cases. Local, federated and centralized models use exactly the same model, features, scaling and amount of training, so the comparison is fair.
+- **Secure aggregation:** each pair of hospitals agrees on a secret seed with Diffie-Hellman (RFC 3526, 2048-bit), and every message is masked so that the masks cancel only in the sum. The model is the same as without secure aggregation, up to rounding around 10^-12.
 
-## Evaluation
+## Documentation
 
-The hidden automated benchmark contributes **40 of 100 points**:
-
-- de-identification: 15 points;
-- structured extraction: 15 points;
-- readmission prediction: 10 points.
-
-The remaining **60 points** are assigned through code and report review:
-
-- federated-learning implementation and experimental design: 20;
-- privacy mechanism and threat-model reasoning: 15;
-- software engineering, tests, and reproducibility: 15;
-- scientific analysis and communication: 5;
-- Git history and independent development process: 5.
-
-Raw model performance is not the sole or dominant criterion. A simpler, correct, well-tested and well-reasoned solution may score higher than a complex but opaque system.
-
-## Submission
-
-Submit:
-
-1. a Git repository URL with accessible commit history;
-2. the commit hash to be evaluated;
-3. any execution notes not already covered in the README.
-
-Do not submit or generate any real patient data.
+- [`REPORT.md`](REPORT.md): method, results, error analysis, threat model and limitations for every task.
+- [`AI_USAGE.md`](AI_USAGE.md): how AI tools were used, and what I checked, changed or rejected.
+- [`ORIGINAL_CHALLENGE_README.md`](ORIGINAL_CHALLENGE_README.md): the original challenge description.
+- [`DATA_DICTIONARY.md`](DATA_DICTIONARY.md), [`DATA_CARD.md`](DATA_CARD.md), [`SUBMISSION_SCHEMA.md`](SUBMISSION_SCHEMA.md): provided with the challenge.

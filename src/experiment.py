@@ -181,6 +181,7 @@ def run_experiment(
             "rounds": ROUNDS,
             "local_epochs": LOCAL_EPOCHS,
             "client_weighting": "number_of_training_cases",
+            "secure_aggregation": True,
             **results("federated"),
             "convergence": {
                 "training_loss_by_round": [round(h["training_loss"], 4) for h in history],
@@ -196,11 +197,16 @@ def run_experiment(
         },
         "communication": {
             "raw_rows_transferred": False,
-            "once_per_training_client_to_server": f"number of training cases (1 number) and feature totals "
-            f"(count, sum, sum of squares for {len(FEATURES)} features = {3 * len(FEATURES)} numbers)",
-            "once_per_training_server_to_client": f"shared scaling (mean and spread, {2 * len(FEATURES)} numbers)",
+            "secure_aggregation": "every client-to-server message below is masked; the server can only read the "
+            "sum over all hospitals (see privacy_summary.json)",
+            "once_per_training_client_to_server": f"one Diffie-Hellman public key, then one masked vector with the "
+            f"number of training cases and the feature totals (count, sum, sum of squares for {len(FEATURES)} "
+            f"features) = {1 + 3 * len(FEATURES)} numbers",
+            "once_per_training_server_to_client": f"the other hospitals' public keys and the shared scaling "
+            f"(mean and spread, {2 * len(FEATURES)} numbers)",
             "each_round_server_to_client": f"global model weights ({n_weights} numbers)",
-            "each_round_client_to_server": f"updated model weights ({n_weights} numbers) and one training-loss value",
+            "each_round_client_to_server": f"masked case-weighted model weights ({n_weights} numbers) and masked "
+            "case-weighted training loss (1 number)",
             "numbers_per_client_per_training": 1 + 3 * len(FEATURES) + ROUNDS * (n_weights + 1),
         },
         "non_iid_analysis": {
@@ -219,8 +225,8 @@ def run_experiment(
             "so per-site validation metrics are very noisy. Cross-validation is the more reliable comparison.",
             "Features were chosen with cross-validation on the same training set, which makes the "
             "cross-validation scores somewhat optimistic.",
-            "Model weights are shared in the clear; federated learning alone is not a formal privacy guarantee "
-            "(see privacy_summary.json).",
+            "Secure aggregation hides each hospital's messages from the server, but the summed totals and the "
+            "models are still revealed; there is no differential-privacy guarantee (see privacy_summary.json).",
             "Hospitals are nearly equal in size, so weighting by cases and equal weighting give almost the same model.",
         ],
     }

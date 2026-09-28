@@ -1,7 +1,9 @@
 .venv/
-__pycache__/
-.pytest_cache/
+.git/
 outputs/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
 *.pyc
 .DS_Store
 .idea/

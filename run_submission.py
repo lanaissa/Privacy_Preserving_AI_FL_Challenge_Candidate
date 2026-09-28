@@ -10,8 +10,9 @@ from typing import Any
 import numpy as np
 
 from src.deid import detect_pii, render_deidentified
-from src.experiment import run_experiment
+from src.experiment import CONFIG, LOCAL_EPOCHS, ROUNDS, SEEDS, run_experiment
 from src.extraction import extract_clinical_data
+from src.privacy_evaluation import build_privacy_summary, evaluate_secure_aggregation
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -64,13 +65,8 @@ def main() -> None:
     (args.artifacts_dir / "experiment_summary.json").write_text(
         json.dumps(experiment_summary, indent=2), encoding="utf-8"
     )
-    privacy_summary = {
-        "mechanism": None,
-        "threat_model": "TODO",
-        "privacy_guarantee": "TODO",
-        "utility_analysis": "TODO",
-        "limitations": "TODO",
-    }
+    evaluation = evaluate_secure_aggregation(train_records, ROUNDS, LOCAL_EPOCHS, CONFIG, SEEDS[0])
+    privacy_summary = build_privacy_summary(evaluation, ROUNDS)
     (args.artifacts_dir / "privacy_summary.json").write_text(
         json.dumps(privacy_summary, indent=2), encoding="utf-8"
     )
